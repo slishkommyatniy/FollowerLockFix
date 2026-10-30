@@ -26,28 +26,58 @@ namespace FollowerLockFix
         auto lockLevel = a_toActivate->GetLockLevel();
         auto inv = a_activator->GetInventory();
 
-        // 1. Замок требует ключ
-        if (lockLevel == RE::LOCK_LEVEL::kRequiresKey || key != nullptr) {
-            if (!key) {
-                return true; // Замок сюжетно заблокирован
-            }
-            auto it = inv.find(key);
-            if (it == inv.end() || it->second.first <= 0) {
-                return true; // У спутника нет ключа — запрещаем!
-            }
-        }
-        // 2. Обычный замок (Новичок .. Мастер)
-        else {
-            auto* lockpick = RE::TESForm::LookupByID<RE::TESBoundObject>(0x0000000A);
-            if (lockpick) {
-                auto it = inv.find(lockpick);
-                if (it == inv.end() || it->second.first <= 0) {
-                    return true; // У спутника нет отмычек — запрещаем!
-                }
+        // 1. Если у спутника есть ключ от этого сундука/двери — открывает в любом случае
+        if (key) {
+            auto itKey = inv.find(key);
+            if (itKey != inv.end() && itKey->second.first > 0) {
+                return false;
             }
         }
 
-        return false;
+        // 2. Замок ТРЕБУЕТ КЛЮЧ (взломать отмычкой в игре невозможно)
+        if (lockLevel == RE::LOCK_LEVEL::kRequiresKey) {
+            return true; // Ключа у спутника нет (проверили выше) — запрещаем!
+        }
+
+        // 3. Обычный замок (Новичок .. Мастер)
+        // Проверяем наличие хотя бы одной отмычки в инвентаре спутника
+        auto* lockpick = RE::TESForm::LookupByID<RE::TESBoundObject>(0x0000000A);
+        if (lockpick) {
+            auto it = inv.find(lockpick);
+            if (it == inv.end() || it->second.first <= 0) {
+                return true; // Нет отмычек — спутнику нечем взламывать!
+            }
+        }
+
+        // Проверяем реальный навык взлома спутника (учитывает статы NFF, баффы и вещи)
+        float lockpickingSkill = a_activator->GetActorValue(RE::ActorValue::kLockpicking);
+
+        float requiredSkill = 0.0f;
+        switch (lockLevel) {
+        case RE::LOCK_LEVEL::kVeryEasy:  // Новичок
+            requiredSkill = 0.0f;
+            break;
+        case RE::LOCK_LEVEL::kEasy:      // Ученик
+            requiredSkill = 25.0f;
+            break;
+        case RE::LOCK_LEVEL::kAverage:   // Адепт
+            requiredSkill = 50.0f;
+            break;
+        case RE::LOCK_LEVEL::kHard:      // Эксперт
+            requiredSkill = 75.0f;
+            break;
+        case RE::LOCK_LEVEL::kVeryHard:  // Мастер
+            requiredSkill = 100.0f;
+            break;
+        default:
+            break;
+        }
+
+        if (lockpickingSkill < requiredSkill) {
+            return true; // Навыка недостаточно — спутник отказывается!
+        }
+
+        return false; // Есть отмычка и достаточный навык — взлом разрешён!
     }
 
     // --- CalculateDoFavor (VTable 0x4D) ---
