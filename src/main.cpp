@@ -1,5 +1,4 @@
-#include <SKSE/SKSE.h>
-#include <RE/Skyrim.h>
+#include "pch.h"
 
 namespace FollowerLockFix
 {
@@ -58,7 +57,7 @@ namespace FollowerLockFix
     };
 }
 
-SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
+SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 {
     SKSE::Init(a_skse);
 
