@@ -2,50 +2,50 @@
 
 namespace FollowerLockFix
 {
-    using FnActivateRef = bool (*)(
-        RE::TESObjectREFR* a_this,
-        RE::TESObjectREFR* a_activator,
-        std::uint8_t a_arg2,
+    using FnActivate = bool (*)(
+        RE::TESBoundObject* a_this,
+        RE::TESObjectREFR* a_targetRef,
+        RE::TESObjectREFR* a_activatorRef,
+        std::uint8_t a_arg3,
         RE::TESBoundObject* a_object,
-        std::int32_t a_count,
-        bool a_defaultProcessingOnly);
+        std::int32_t a_targetCount);
 
-    static inline FnActivateRef _originalActivateRef = nullptr;
+    static inline FnActivate _originalActivate = nullptr;
 
-    bool Hooked_ActivateRef(
-        RE::TESObjectREFR* a_this,
-        RE::TESObjectREFR* a_activator,
-        std::uint8_t a_arg2,
+    bool Hooked_Activate(
+        RE::TESBoundObject* a_this,
+        RE::TESObjectREFR* a_targetRef,
+        RE::TESObjectREFR* a_activatorRef,
+        std::uint8_t a_arg3,
         RE::TESBoundObject* a_object,
-        std::int32_t a_count,
-        bool a_defaultProcessingOnly)
+        std::int32_t a_targetCount)
     {
-        if (a_this && a_activator) {
-            // Если объект заперт (сундук, сейф, дверь)
-            if (a_this->IsLocked()) {
+        if (a_targetRef && a_activatorRef) {
+            // Если сундук/контейнер заперт
+            if (a_targetRef->IsLocked()) {
                 auto* player = RE::PlayerCharacter::GetSingleton();
 
-                // Если открывает НЕ игрок (спутник/NPC по приказу)
-                if (a_activator != player) {
-                    auto* actor = a_activator->As<RE::Actor>();
+                // Если открывает НЕ игрок (спутник по приказу)
+                if (a_activatorRef != player) {
+                    auto* actor = a_activatorRef->As<RE::Actor>();
                     if (actor) {
-                        auto* lock = a_this->GetLock();
+                        auto* lock = a_targetRef->GetLock();
                         if (lock) {
                             auto* key = lock->key;
-                            auto lockLevel = a_this->GetLockLevel();
+                            auto lockLevel = a_targetRef->GetLockLevel();
                             auto inv = actor->GetInventory();
 
                             // 1. Замок требует ключ
                             if (lockLevel == RE::LOCK_LEVEL::kRequiresKey || key != nullptr) {
                                 if (!key) {
-                                    return false; // Ключа вообще нет в игре — замок заблокирован
+                                    return false; // Замок заблокирован сюжетно
                                 }
                                 auto it = inv.find(key);
                                 if (it == inv.end() || it->second.first <= 0) {
                                     return false; // У спутника нет ключа — запрещаем открывать!
                                 }
                             }
-                            // 2. Обычный замок (Новичок, Ученик, Мастер и т.д.)
+                            // 2. Обычный замок (Новичок, Мастер и т.д.)
                             else {
                                 auto* lockpick = RE::TESForm::LookupByID<RE::TESBoundObject>(0x0000000A);
                                 if (lockpick) {
@@ -61,18 +61,14 @@ namespace FollowerLockFix
             }
         }
 
-        return _originalActivateRef(a_this, a_activator, a_arg2, a_object, a_count, a_defaultProcessingOnly);
+        return _originalActivate(a_this, a_targetRef, a_activatorRef, a_arg3, a_object, a_targetCount);
     }
 
     void Install()
     {
-        auto& trampoline = SKSE::GetTrampoline();
-        trampoline.create(14);
-
-        _originalActivateRef = reinterpret_cast<FnActivateRef>(
-            trampoline.write_branch<5>(
-                REL::RelocationID(19369, 19796).address(),
-                Hooked_ActivateRef));
+        // Перехватываем виртуальную функцию Activate ТОЛЬКО у контейнеров (TESObjectCONT)
+        REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_TESObjectCONT[0] };
+        _originalActivate = reinterpret_cast<FnActivate>(vtbl.write_vfunc(0x37, Hooked_Activate));
     }
 }
 
