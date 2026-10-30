@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Build
+        run: |
+          xmake f -m releasedbg -y
+          xmake -y
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FollowerLockFix
+          path: build/**/*.dll
