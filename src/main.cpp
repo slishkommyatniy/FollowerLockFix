@@ -2,59 +2,78 @@
 
 namespace FollowerLockFix
 {
-    struct ActivateHook
-    {
-        static bool Hooked_Activate(
-            RE::TESObjectREFR* a_target,
-            RE::TESObjectREFR* a_activatorRef,
-            std::uint8_t a_arg3,
-            RE::TESBoundObject* a_object,
-            std::int32_t a_count,
-            bool a_defaultProcessingOnly)
-        {
-            if (a_target && a_activatorRef) {
-                // Если объект заперт (сундук, сейф, дверь)
-                if (a_target->IsLocked()) {
-                    auto* player = RE::PlayerCharacter::GetSingleton();
+    using FnActivateRef = bool (*)(
+        RE::TESObjectREFR* a_this,
+        RE::TESObjectREFR* a_activator,
+        std::uint8_t a_arg2,
+        RE::TESBoundObject* a_object,
+        std::int32_t a_count,
+        bool a_defaultProcessingOnly);
 
-                    // Если открывает НЕ игрок (спутник/NPC по приказу)
-                    if (a_activatorRef != player) {
-                        auto* actor = a_activatorRef->As<RE::Actor>();
-                        if (actor) {
-                            const auto lockLevel = a_target->GetLockLevel();
-                            auto* requiredKey = a_target->GetKey();
+    static inline FnActivateRef _originalActivateRef = nullptr;
+
+    bool Hooked_ActivateRef(
+        RE::TESObjectREFR* a_this,
+        RE::TESObjectREFR* a_activator,
+        std::uint8_t a_arg2,
+        RE::TESBoundObject* a_object,
+        std::int32_t a_count,
+        bool a_defaultProcessingOnly)
+    {
+        if (a_this && a_activator) {
+            // Если объект заперт (сундук, сейф, дверь)
+            if (a_this->IsLocked()) {
+                auto* player = RE::PlayerCharacter::GetSingleton();
+
+                // Если открывает НЕ игрок (спутник/NPC по приказу)
+                if (a_activator != player) {
+                    auto* actor = a_activator->As<RE::Actor>();
+                    if (actor) {
+                        auto* lock = a_this->GetLock();
+                        if (lock) {
+                            auto* key = lock->key;
+                            auto lockLevel = a_this->GetLockLevel();
+                            auto inv = actor->GetInventory();
 
                             // 1. Замок требует ключ
-                            if (lockLevel == RE::LOCK_LEVEL::kRequiresKey || requiredKey != nullptr) {
-                                if (!requiredKey || actor->GetItemCount(requiredKey) <= 0) {
-                                    // У спутника НЕТ ключа — блокируем открытие сундука!
-                                    return false;
+                            if (lockLevel == RE::LOCK_LEVEL::kRequiresKey || key != nullptr) {
+                                if (!key) {
+                                    return false; // Ключа вообще нет в игре — замок заблокирован
+                                }
+                                auto it = inv.find(key);
+                                if (it == inv.end() || it->second.first <= 0) {
+                                    return false; // У спутника нет ключа — запрещаем открывать!
                                 }
                             }
-                            // 2. Обычный замок без ключа
+                            // 2. Обычный замок (Новичок, Ученик, Мастер и т.д.)
                             else {
                                 auto* lockpick = RE::TESForm::LookupByID<RE::TESBoundObject>(0x0000000A);
-                                if (lockpick && actor->GetItemCount(lockpick) <= 0) {
-                                    // У спутника нет отмычек — блокируем взлом!
-                                    return false;
+                                if (lockpick) {
+                                    auto it = inv.find(lockpick);
+                                    if (it == inv.end() || it->second.first <= 0) {
+                                        return false; // У спутника нет отмычек — запрещаем взлом!
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-
-            return _originalActivate(a_target, a_activatorRef, a_arg3, a_object, a_count, a_defaultProcessingOnly);
         }
 
-        static inline REL::Relocation<decltype(Hooked_Activate)> _originalActivate;
+        return _originalActivateRef(a_this, a_activator, a_arg2, a_object, a_count, a_defaultProcessingOnly);
+    }
 
-        static void Install()
-        {
-            REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_TESObjectREFR[0] };
-            _originalActivate = vtbl.write_vfunc(0x37, Hooked_Activate);
-        }
-    };
+    void Install()
+    {
+        auto& trampoline = SKSE::GetTrampoline();
+        trampoline.create(14);
+
+        _originalActivateRef = reinterpret_cast<FnActivateRef>(
+            trampoline.write_branch<5>(
+                REL::RelocationID(19369, 19796).address(),
+                Hooked_ActivateRef));
+    }
 }
 
 SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
@@ -63,7 +82,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 
     SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
         if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
-            FollowerLockFix::ActivateHook::Install();
+            FollowerLockFix::Install();
         }
     });
 
