@@ -4,16 +4,17 @@ namespace FollowerLockFix
 {
     bool ShouldBlockFavor(RE::Actor* a_activator, RE::TESObjectREFR* a_toActivate)
     {
-        if (!a_toActivate || !a_toActivate->IsLocked()) {
+        if (!a_activator || !a_toActivate) {
             return false;
         }
 
-        if (!a_activator) {
+        // Фикс работает ТОЛЬКО для спутников игрока.
+        // Обычные жители городов, стражники и враги не проверяются!
+        if (!a_activator->IsPlayerTeammate()) {
             return false;
         }
 
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (a_activator == player) {
+        if (!a_toActivate->IsLocked()) {
             return false;
         }
 
@@ -26,7 +27,7 @@ namespace FollowerLockFix
         auto lockLevel = a_toActivate->GetLockLevel();
         auto inv = a_activator->GetInventory();
 
-        // 1. Если у спутника есть ключ от этого сундука/двери — открывает в любом случае
+        // 1. Если у спутника в кармане есть ключ от этого замка — открывает свободно
         if (key) {
             auto itKey = inv.find(key);
             if (itKey != inv.end() && itKey->second.first > 0) {
@@ -34,23 +35,27 @@ namespace FollowerLockFix
             }
         }
 
-        // 2. Замок ТРЕБУЕТ КЛЮЧ (взломать отмычкой в игре невозможно)
+        // 2. Если замок ТРЕБУЕТ КЛЮЧ — без ключа взломать невозможно
         if (lockLevel == RE::LOCK_LEVEL::kRequiresKey) {
-            return true; // Ключа у спутника нет (проверили выше) — запрещаем!
+            return true;
         }
 
-        // 3. Обычный замок (Новичок .. Мастер)
-        // Проверяем наличие хотя бы одной отмычки в инвентаре спутника
+        // 3. Обычный замок (Новичок .. Мастер):
+        // Проверяем наличие отмычек у спутника
         auto* lockpick = RE::TESForm::LookupByID<RE::TESBoundObject>(0x0000000A);
         if (lockpick) {
             auto it = inv.find(lockpick);
             if (it == inv.end() || it->second.first <= 0) {
-                return true; // Нет отмычек — спутнику нечем взламывать!
+                return true; // Нет отмычек — нечем ковырять замок!
             }
         }
 
-        // Проверяем реальный навык взлома спутника (учитывает статы NFF, баффы и вещи)
-        float lockpickingSkill = a_activator->GetActorValue(RE::ActorValue::kLockpicking);
+        // Проверяем навык взлома спутника (учитывает статы NFF)
+        float lockpickingSkill = 0.0f;
+        auto* avOwner = a_activator->AsActorValueOwner();
+        if (avOwner) {
+            lockpickingSkill = avOwner->GetActorValue(RE::ActorValue::kLockpicking);
+        }
 
         float requiredSkill = 0.0f;
         switch (lockLevel) {
@@ -77,7 +82,7 @@ namespace FollowerLockFix
             return true; // Навыка недостаточно — спутник отказывается!
         }
 
-        return false; // Есть отмычка и достаточный навык — взлом разрешён!
+        return false; // Есть отмычка и хватает навыка — разрешено!
     }
 
     // --- CalculateDoFavor (VTable 0x4D) ---
@@ -117,7 +122,7 @@ namespace FollowerLockFix
         return _originalCalculateDoFavorDOOR(a_this, a_activator, a_arg2, a_toActivate, a_arg3);
     }
 
-    // --- Activate (VTable 0x37) ---
+    // --- Activate (VTable 0x37) только для сундуков ---
     using FnActivate = bool (*)(
         RE::TESBoundObject* a_this,
         RE::TESObjectREFR* a_targetRef,
@@ -127,7 +132,6 @@ namespace FollowerLockFix
         std::int32_t a_targetCount);
 
     static inline FnActivate _originalActivateCONT = nullptr;
-    static inline FnActivate _originalActivateDOOR = nullptr;
 
     bool Hooked_ActivateCONT(
         RE::TESBoundObject* a_this,
@@ -144,29 +148,15 @@ namespace FollowerLockFix
         return _originalActivateCONT(a_this, a_targetRef, a_activatorRef, a_arg3, a_object, a_targetCount);
     }
 
-    bool Hooked_ActivateDOOR(
-        RE::TESBoundObject* a_this,
-        RE::TESObjectREFR* a_targetRef,
-        RE::TESObjectREFR* a_activatorRef,
-        std::uint8_t a_arg3,
-        RE::TESBoundObject* a_object,
-        std::int32_t a_targetCount)
-    {
-        auto* actor = a_activatorRef ? a_activatorRef->As<RE::Actor>() : nullptr;
-        if (actor && ShouldBlockFavor(actor, a_targetRef)) {
-            return false;
-        }
-        return _originalActivateDOOR(a_this, a_targetRef, a_activatorRef, a_arg3, a_object, a_targetCount);
-    }
-
     void Install()
     {
+        // Перехватываем сундуки
         REL::Relocation<std::uintptr_t> contVtbl{ RE::VTABLE_TESObjectCONT[0] };
         _originalActivateCONT = reinterpret_cast<FnActivate>(contVtbl.write_vfunc(0x37, Hooked_ActivateCONT));
         _originalCalculateDoFavorCONT = reinterpret_cast<FnCalculateDoFavor>(contVtbl.write_vfunc(0x4D, Hooked_CalculateDoFavorCONT));
 
+        // Перехватываем приказы для дверей (без вторжения в физическую активацию NPC)
         REL::Relocation<std::uintptr_t> doorVtbl{ RE::VTABLE_TESObjectDOOR[0] };
-        _originalActivateDOOR = reinterpret_cast<FnActivate>(doorVtbl.write_vfunc(0x37, Hooked_ActivateDOOR));
         _originalCalculateDoFavorDOOR = reinterpret_cast<FnCalculateDoFavor>(doorVtbl.write_vfunc(0x4D, Hooked_CalculateDoFavorDOOR));
     }
 }
